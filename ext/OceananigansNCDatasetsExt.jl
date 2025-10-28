@@ -14,7 +14,7 @@ using Oceananigans.BuoyancyFormulations: BuoyancyForce, BuoyancyTracer, Seawater
 using Oceananigans.Fields
 using Oceananigans.Fields: Reduction, reduced_dimensions, reduced_location, location, indices
 using Oceananigans.Grids: Center, Face, Flat, Periodic, Bounded,
-                          AbstractGrid, RectilinearGrid, LatitudeLongitudeGrid, StaticVerticalDiscretization,
+                          AbstractGrid, RectilinearGrid, LatitudeLongitudeGrid, OrthogonalSphericalShellGrid, StaticVerticalDiscretization,
                           topology, halo_size, xspacings, yspacings, zspacings, λspacings, φspacings,
                           parent_index_range, nodes, ξnodes, ηnodes, rnodes, validate_index, peripheral_node,
                           constructor_arguments
@@ -288,6 +288,45 @@ function gather_dimensions(outputs, grid::LatitudeLongitudeGrid, indices, with_h
     return dims
 end
 
+function gather_dimensions(outputs, grid::OrthogonalSphericalShellGrid, indices, with_halos, dim_name_generator)
+    TΛ, TΦ, TZ = topology(grid)
+    Nλ, Nφ, Nz = size(grid)
+    Hλ, Hφ, Hz = halo_size(grid)
+
+    dims = Dict()
+
+    if TΛ != Flat
+        λᶠᵃᵃ_name = dim_name_generator("λ", grid, f, nothing, nothing, Val(:x))
+        λᶜᵃᵃ_name = dim_name_generator("λ", grid, c, nothing, nothing, Val(:x))
+
+        λᶠᵃᵃ_data = collect_dim(grid.λᶠᵃᵃ, f, TΛ(), Nλ, Hλ, indices[1], with_halos)
+        λᶜᵃᵃ_data = collect_dim(grid.λᶜᵃᵃ, c, TΛ(), Nλ, Hλ, indices[1], with_halos)
+
+        dims[λᶠᵃᵃ_name] = λᶠᵃᵃ_data
+        dims[λᶜᵃᵃ_name] = λᶜᵃᵃ_data
+    end
+
+    if TΦ != Flat
+        φᵃᶠᵃ_name = dim_name_generator("φ", grid, nothing, f, nothing, Val(:y))
+        φᵃᶜᵃ_name = dim_name_generator("φ", grid, nothing, c, nothing, Val(:y))
+
+        φᵃᶠᵃ_data = collect_dim(grid.φᵃᶠᵃ, f, TΦ(), Nφ, Hφ, indices[2], with_halos)
+        φᵃᶜᵃ_data = collect_dim(grid.φᵃᶜᵃ, c, TΦ(), Nφ, Hφ, indices[2], with_halos)
+
+        dims[φᵃᶠᵃ_name] = φᵃᶠᵃ_data
+        dims[φᵃᶜᵃ_name] = φᵃᶜᵃ_data
+    end
+
+    if TZ != Flat
+        vertical_dims = gather_vertical_dimensions(grid.z, TZ, Nz, Hz, indices[3], with_halos, dim_name_generator)
+        dims = merge(dims, vertical_dims)
+    end
+
+    maybe_add_particle_dims!(dims, outputs)
+
+    return dims
+end
+
 gather_dimensions(outputs, grid::ImmersedBoundaryGrid, args...) =
     gather_dimensions(outputs, grid.underlying_grid, args...)
 
@@ -368,8 +407,79 @@ function gather_grid_metrics(grid::LatitudeLongitudeGrid, indices, dim_name_gene
     end
 
     if TΦ != Flat
-        Δφᵃᶠᵃ_name = dim_name_generator("Δλ", grid, nothing, f, nothing, Val(:y))
-        Δφᵃᶜᵃ_name = dim_name_generator("Δλ", grid, nothing, c, nothing, Val(:y))
+        Δφᵃᶠᵃ_name = dim_name_generator("Δφ", grid, nothing, f, nothing, Val(:y))
+        Δφᵃᶜᵃ_name = dim_name_generator("Δφ", grid, nothing, c, nothing, Val(:y))
+
+        Δφᵃᶠᵃ_field = Field(φspacings(grid, f); indices)
+        Δφᵃᶜᵃ_field = Field(φspacings(grid, c); indices)
+
+        metrics[Δφᵃᶠᵃ_name] = Δφᵃᶠᵃ_field
+        metrics[Δφᵃᶜᵃ_name] = Δφᵃᶜᵃ_field
+
+        Δyᶠᶠᵃ_name = dim_name_generator("Δy", grid, f, f, nothing, Val(:y))
+        Δyᶠᶜᵃ_name = dim_name_generator("Δy", grid, f, c, nothing, Val(:y))
+        Δyᶜᶠᵃ_name = dim_name_generator("Δy", grid, c, f, nothing, Val(:y))
+        Δyᶜᶜᵃ_name = dim_name_generator("Δy", grid, c, c, nothing, Val(:y))
+
+        Δyᶠᶠᵃ_field = Field(yspacings(grid, f, f); indices)
+        Δyᶠᶜᵃ_field = Field(yspacings(grid, f, c); indices)
+        Δyᶜᶠᵃ_field = Field(yspacings(grid, c, f); indices)
+        Δyᶜᶜᵃ_field = Field(yspacings(grid, c, c); indices)
+
+        metrics[Δyᶠᶠᵃ_name] = Δyᶠᶠᵃ_field
+        metrics[Δyᶠᶜᵃ_name] = Δyᶠᶜᵃ_field
+        metrics[Δyᶜᶠᵃ_name] = Δyᶜᶠᵃ_field
+        metrics[Δyᶜᶜᵃ_name] = Δyᶜᶜᵃ_field
+    end
+
+    if TZ != Flat
+        Δzᵃᵃᶠ_name = dim_name_generator("Δz", grid, nothing, nothing, f, Val(:z))
+        Δzᵃᵃᶜ_name = dim_name_generator("Δz", grid, nothing, nothing, c, Val(:z))
+
+        Δzᵃᵃᶠ_field = Field(zspacings(grid, f); indices)
+        Δzᵃᵃᶜ_field = Field(zspacings(grid, c); indices)
+
+        metrics[Δzᵃᵃᶠ_name] = Δzᵃᵃᶠ_field
+        metrics[Δzᵃᵃᶜ_name] = Δzᵃᵃᶜ_field
+    end
+
+    return metrics
+end
+
+function gather_grid_metrics(grid::OrthogonalSphericalGrid, indices, dim_name_generator)
+    TΛ, TΦ, TZ = topology(grid)
+
+    metrics = Dict()
+
+    if TΛ != Flat
+        Δλᶠᵃᵃ_name = dim_name_generator("Δλ", grid, f, nothing, nothing, Val(:x))
+        Δλᶜᵃᵃ_name = dim_name_generator("Δλ", grid, c, nothing, nothing, Val(:x))
+
+        Δλᶠᵃᵃ_field = Field(λspacings(grid, f); indices)
+        Δλᶜᵃᵃ_field = Field(λspacings(grid, c); indices)
+
+        metrics[Δλᶠᵃᵃ_name] = Δλᶠᵃᵃ_field
+        metrics[Δλᶜᵃᵃ_name] = Δλᶜᵃᵃ_field
+
+        Δxᶠᶠᵃ_name = dim_name_generator("Δx", grid, f, f, nothing, Val(:x))
+        Δxᶠᶜᵃ_name = dim_name_generator("Δx", grid, f, c, nothing, Val(:x))
+        Δxᶜᶠᵃ_name = dim_name_generator("Δx", grid, c, f, nothing, Val(:x))
+        Δxᶜᶜᵃ_name = dim_name_generator("Δx", grid, c, c, nothing, Val(:x))
+
+        Δxᶠᶠᵃ_field = Field(xspacings(grid, f, f); indices)
+        Δxᶠᶜᵃ_field = Field(xspacings(grid, f, c); indices)
+        Δxᶜᶠᵃ_field = Field(xspacings(grid, c, f); indices)
+        Δxᶜᶜᵃ_field = Field(xspacings(grid, c, c); indices)
+
+        metrics[Δxᶠᶠᵃ_name] = Δxᶠᶠᵃ_field
+        metrics[Δxᶠᶜᵃ_name] = Δxᶠᶜᵃ_field
+        metrics[Δxᶜᶠᵃ_name] = Δxᶜᶠᵃ_field
+        metrics[Δxᶜᶜᵃ_name] = Δxᶜᶜᵃ_field
+    end
+
+    if TΦ != Flat
+        Δφᵃᶠᵃ_name = dim_name_generator("Δφ", grid, nothing, f, nothing, Val(:y))
+        Δφᵃᶜᵃ_name = dim_name_generator("Δφ", grid, nothing, c, nothing, Val(:y))
 
         Δφᵃᶠᵃ_field = Field(φspacings(grid, f); indices)
         Δφᵃᶜᵃ_field = Field(φspacings(grid, c); indices)
@@ -487,6 +597,23 @@ function field_dimensions(field::AbstractField, grid::LatitudeLongitudeGrid, dim
     return tuple(λ_dim_name..., φ_dim_name..., z_dim_name...)
 end
 
+function field_dimensions(field::AbstractField, grid::OrthogonalSphericalShellGrid, dim_name_generator)
+    LΛ, LΦ, LZ = location(field)
+    TΛ, TΦ, TZ = topology(grid)
+
+    eff_reduced_dims = effective_reduced_dimensions(field)
+
+    λ_dim_name = (1 ∈ eff_reduced_dims || TΛ == Flat) ? "" : dim_name_generator("λ", grid, LΛ(), nothing, nothing, Val(:x))
+    φ_dim_name = (2 ∈ eff_reduced_dims || TΦ == Flat) ? "" : dim_name_generator("φ", grid, nothing, LΦ(), nothing, Val(:y))
+    z_dim_name = (3 ∈ eff_reduced_dims || TZ == Flat) ? "" : dim_name_generator("z", grid, nothing, nothing, LZ(), Val(:z))
+
+    λ_dim_name = isempty(λ_dim_name) ? tuple() : tuple(λ_dim_name)
+    φ_dim_name = isempty(φ_dim_name) ? tuple() : tuple(φ_dim_name)
+    z_dim_name = isempty(z_dim_name) ? tuple() : tuple(z_dim_name)
+
+    return tuple(λ_dim_name..., φ_dim_name..., z_dim_name...)
+end
+
 field_dimensions(field::AbstractField, grid::ImmersedBoundaryGrid, dim_name_generator) =
     field_dimensions(field, grid.underlying_grid, dim_name_generator)
 
@@ -575,11 +702,94 @@ function default_dimension_attributes(grid::LatitudeLongitudeGrid, dim_name_gene
     Δλᶠᵃᵃ_attrs = Dict("long_name" => "Angular spacings between cell faces in the zonal direction.",   "units" => "degrees")
     Δλᶜᵃᵃ_attrs = Dict("long_name" => "Angular spacings between cell centers in the zonal direction.", "units" => "degrees")
 
-    Δφᵃᶠᵃ_name = dim_name_generator("Δλ", grid, nothing, f, nothing, Val(:y))
-    Δφᵃᶜᵃ_name = dim_name_generator("Δλ", grid, nothing, c, nothing, Val(:y))
+    Δφᵃᶠᵃ_name = dim_name_generator("Δφ", grid, nothing, f, nothing, Val(:y))
+    Δφᵃᶜᵃ_name = dim_name_generator("Δφ", grid, nothing, c, nothing, Val(:y))
 
     Δφᵃᶠᵃ_attrs = Dict("long_name" => "Angular spacings between cell faces in the meridional direction.",   "units" => "degrees")
-    Δφᵃᶜᵃ_attrs = Dict("long_name" => "Angular spacings between cell centers in the meridional direction.", "units" => "degrees")
+
+
+    Δxᶠᶠᵃ_name = dim_name_generator("Δx", grid, f, f, nothing, Val(:x))
+    Δxᶠᶜᵃ_name = dim_name_generator("Δx", grid, f, c, nothing, Val(:x))
+    Δxᶜᶠᵃ_name = dim_name_generator("Δx", grid, c, f, nothing, Val(:x))
+    Δxᶜᶜᵃ_name = dim_name_generator("Δx", grid, c, c, nothing, Val(:x))
+
+    Δxᶠᶠᵃ_attrs = Dict("long_name" => "Geodesic spacings in the zonal direction between the cell located at (Face, Face).",
+                       "units" => "m")
+
+    Δxᶠᶜᵃ_attrs = Dict("long_name" => "Geodesic spacings in the zonal direction between the cell located at (Face, Center).",
+                       "units" => "m")
+
+    Δxᶜᶠᵃ_attrs = Dict("long_name" => "Geodesic spacings in the zonal direction between the cell located at (Center, Face).",
+                       "units" => "m")
+
+    Δxᶜᶜᵃ_attrs = Dict("long_name" => "Geodesic spacings in the zonal direction between the cell located at (Center, Center).",
+                       "units" => "m")
+
+    Δyᶠᶠᵃ_name = dim_name_generator("Δy", grid, f, f, nothing, Val(:y))
+    Δyᶠᶜᵃ_name = dim_name_generator("Δy", grid, f, c, nothing, Val(:y))
+    Δyᶜᶠᵃ_name = dim_name_generator("Δy", grid, c, f, nothing, Val(:y))
+    Δyᶜᶜᵃ_name = dim_name_generator("Δy", grid, c, c, nothing, Val(:y))
+
+    Δyᶠᶠᵃ_attrs = Dict("long_name" => "Geodesic spacings in the meridional direction between the cell located at (Face, Face).",
+                       "units" => "m")
+
+    Δyᶠᶜᵃ_attrs = Dict("long_name" => "Geodesic spacings in the meridional direction between the cell located at (Face, Center).",
+                       "units" => "m")
+
+    Δyᶜᶠᵃ_attrs = Dict("long_name" => "Geodesic spacings in the meridional direction between the cell located at (Center, Face).",
+                       "units" => "m")
+
+    Δyᶜᶜᵃ_attrs = Dict("long_name" => "Geodesic spacings in the meridional direction between the cell located at (Center, Center).",
+                       "units" => "m")
+
+    horizontal_dimension_attributes = Dict(λᶠᵃᵃ_name  => λᶠᵃᵃ_attrs,
+                                           λᶜᵃᵃ_name  => λᶜᵃᵃ_attrs,
+                                           φᵃᶠᵃ_name  => φᵃᶠᵃ_attrs,
+                                           φᵃᶜᵃ_name  => φᵃᶜᵃ_attrs,
+                                           Δλᶠᵃᵃ_name => Δλᶠᵃᵃ_attrs,
+                                           Δλᶜᵃᵃ_name => Δλᶜᵃᵃ_attrs,
+                                           Δφᵃᶠᵃ_name => Δφᵃᶠᵃ_attrs,
+                                           Δφᵃᶜᵃ_name => Δφᵃᶜᵃ_attrs,
+                                           Δxᶠᶠᵃ_name => Δxᶠᶠᵃ_attrs,
+                                           Δxᶠᶜᵃ_name => Δxᶠᶜᵃ_attrs,
+                                           Δxᶜᶠᵃ_name => Δxᶜᶠᵃ_attrs,
+                                           Δxᶜᶜᵃ_name => Δxᶜᶜᵃ_attrs,
+                                           Δyᶠᶠᵃ_name => Δyᶠᶠᵃ_attrs,
+                                           Δyᶠᶜᵃ_name => Δyᶠᶜᵃ_attrs,
+                                           Δyᶜᶠᵃ_name => Δyᶜᶠᵃ_attrs,
+                                           Δyᶜᶜᵃ_name => Δyᶜᶜᵃ_attrs)
+
+    vertical_dimension_attributes = default_vertical_dimension_attributes(grid.z, dim_name_generator)
+
+    return merge(base_dimension_attributes,
+                 horizontal_dimension_attributes,
+                 vertical_dimension_attributes)
+end
+
+function default_dimension_attributes(grid::OrthogonalSphericalShellGrid, dim_name_generator)
+    λᶠᵃᵃ_name = dim_name_generator("λ", grid, f, nothing, nothing, Val(:x))
+    λᶜᵃᵃ_name = dim_name_generator("λ", grid, c, nothing, nothing, Val(:x))
+
+    λᶠᵃᵃ_attrs = Dict("long_name" => "Cell face locations in the zonal direction.",   "units" => "degrees east")
+    λᶜᵃᵃ_attrs = Dict("long_name" => "Cell center locations in the zonal direction.", "units" => "degrees east")
+
+    φᵃᶠᵃ_name = dim_name_generator("φ", grid, nothing, f, nothing, Val(:y))
+    φᵃᶜᵃ_name = dim_name_generator("φ", grid, nothing, c, nothing, Val(:y))
+
+    φᵃᶠᵃ_attrs = Dict("long_name" => "Cell face locations in the meridional direction.",   "units" => "degrees north")
+    φᵃᶜᵃ_attrs = Dict("long_name" => "Cell center locations in the meridional direction.", "units" => "degrees north")
+
+    Δλᶠᵃᵃ_name = dim_name_generator("Δλ", grid, f, nothing, nothing, Val(:x))
+    Δλᶜᵃᵃ_name = dim_name_generator("Δλ", grid, c, nothing, nothing, Val(:x))
+
+    Δλᶠᵃᵃ_attrs = Dict("long_name" => "Angular spacings between cell faces in the zonal direction.",   "units" => "degrees")
+    Δλᶜᵃᵃ_attrs = Dict("long_name" => "Angular spacings between cell centers in the zonal direction.", "units" => "degrees")
+
+    Δφᵃᶠᵃ_name = dim_name_generator("Δφ", grid, nothing, f, nothing, Val(:y))
+    Δφᵃᶜᵃ_name = dim_name_generator("Δφ", grid, nothing, c, nothing, Val(:y))
+
+    Δφᵃᶠᵃ_attrs = Dict("long_name" => "Angular spacings between cell faces in the meridional direction.",   "units" => "degrees")
+
 
     Δxᶠᶠᵃ_name = dim_name_generator("Δx", grid, f, f, nothing, Val(:x))
     Δxᶠᶜᵃ_name = dim_name_generator("Δx", grid, f, c, nothing, Val(:x))
@@ -658,6 +868,13 @@ default_velocity_attributes(::LatitudeLongitudeGrid) = Dict(
     "η" => Dict("long_name" => "Sea surface height", "units" => "m/s"),
     "eta" => Dict("long_name" => "Sea surface height", "units" => "m/s")) # non-unicode default
 
+default_velocity_attributes(::OrthogonalSphericalShellGrid) = Dict(
+    "u" => Dict("long_name" => "Velocity in the zonal direction (+ = east).", "units" => "m/s"),
+    "v" => Dict("long_name" => "Velocity in the meridional direction (+ = north).", "units" => "m/s"),
+    "w" => Dict("long_name" => "Velocity in the vertical direction (+ = up).", "units" => "m/s"),
+    "η" => Dict("long_name" => "Sea surface height", "units" => "m/s"),
+    "eta" => Dict("long_name" => "Sea surface height", "units" => "m/s")) # non-unicode default
+
 default_velocity_attributes(ibg::ImmersedBoundaryGrid) = default_velocity_attributes(ibg.underlying_grid)
 
 default_tracer_attributes(::Nothing) = Dict()
@@ -718,6 +935,28 @@ function grid_attributes(grid::LatitudeLongitudeGrid)
                  "Hx" => grid.Hx,
                  "Hy" => grid.Hy,
                  "Hz" => grid.Hz)
+
+    return attrs, dims
+end
+
+function grid_attributes(grid::OrthogonalSphericalShellGrid)
+    TX, TY, TZ = topology(grid)
+
+    dims = Dict()
+
+    attrs = Dict("type" => string(nameof(typeof(grid))),
+                 "eltype" => string(eltype(grid)),
+                 "conformal_mapping_type" => string(nameof(typeof(grid.conformal_mapping))),
+                 "radius" => grid.radius,
+                 "TX" => string(TX),
+                 "TY" => string(TY),
+                 "TZ" => string(TZ),
+                 "Nx" => grid.Nx,
+                 "Ny" => grid.Ny,
+                 "Nz" => grid.Nz,
+                 "Hx" => grid.Hx,
+                 "Hy" => grid.Hy,
+                 "Hz" => grid.Hz,)
 
     return attrs, dims
 end
